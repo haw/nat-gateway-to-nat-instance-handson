@@ -235,6 +235,15 @@ EC2コンソールで **インスタンスを起動** を選択し、次のよ�
 
 ### 5.1 iptablesを有効化する
 
+最初に、Session Managerの接続ユーザーから`ec2-user`へ切り替えます。
+
+```bash
+sudo su - ec2-user
+whoami
+```
+
+`ec2-user`と表示されることを確認します。以降の手順は、この`ec2-user`のシェルで実行します。
+
 ```bash
 sudo yum install iptables-services -y
 sudo systemctl enable iptables
