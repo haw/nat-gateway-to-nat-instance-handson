@@ -419,8 +419,10 @@ CloudShellのプロジェクトディレクトリで実行します。
 ```bash
 nvm use 22
 export CDK_DEFAULT_ACCOUNT=$(aws sts get-caller-identity --query Account --output text)
-npx cdk destroy --force
+npx cdk destroy
 ```
+
+表示された削除対象を確認し、続行確認に`y`で回答します。
 
 ### 4. 削除結果を確認する
 
@@ -475,22 +477,51 @@ printf 'VPC: %s\nPublic subnet: %s\nPrivate subnet: %s\nPrivate EC2: %s\nInstanc
 ### A.2 Security Groupを作成する
 
 ```bash
-NAT_SG_ID=$(aws ec2 create-security-group \
+NAT_SG_ID=$(aws ec2 describe-security-groups \
   --region "${AWS_REGION}" \
-  --group-name nat-handson-nat-instance-sg \
-  --description 'Security group for the NAT instance hands-on' \
-  --vpc-id "${VPC_ID}" \
-  --tag-specifications \
-    'ResourceType=security-group,Tags=[{Key=Name,Value=nat-handson-nat-instance-sg}]' \
-  --query GroupId \
+  --filters \
+    'Name=group-name,Values=nat-handson-nat-instance-sg' \
+    "Name=vpc-id,Values=${VPC_ID}" \
+  --query 'SecurityGroups[0].GroupId' \
   --output text)
 
-aws ec2 authorize-security-group-ingress \
-  --region "${AWS_REGION}" \
-  --group-id "${NAT_SG_ID}" \
-  --ip-permissions \
-    'IpProtocol=tcp,FromPort=80,ToPort=80,IpRanges=[{CidrIp=10.0.1.0/24,Description="HTTP from private subnet"}]' \
-    'IpProtocol=tcp,FromPort=443,ToPort=443,IpRanges=[{CidrIp=10.0.1.0/24,Description="HTTPS from private subnet"}]'
+if [ "${NAT_SG_ID}" = 'None' ]; then
+  NAT_SG_ID=$(aws ec2 create-security-group \
+    --region "${AWS_REGION}" \
+    --group-name nat-handson-nat-instance-sg \
+    --description 'Security group for the NAT instance hands-on' \
+    --vpc-id "${VPC_ID}" \
+    --tag-specifications \
+      'ResourceType=security-group,Tags=[{Key=Name,Value=nat-handson-nat-instance-sg}]' \
+    --query GroupId \
+    --output text)
+  echo "Created Security Group: ${NAT_SG_ID}"
+else
+  echo "Reusing Security Group: ${NAT_SG_ID}"
+fi
+
+ensure_ingress_rule() {
+  local port=$1
+  local description=$2
+  local rule_count
+
+  rule_count=$(aws ec2 describe-security-group-rules \
+    --region "${AWS_REGION}" \
+    --filters "Name=group-id,Values=${NAT_SG_ID}" \
+    --query "length(SecurityGroupRules[?IsEgress==\`false\` && IpProtocol=='tcp' && FromPort==\`${port}\` && ToPort==\`${port}\` && CidrIpv4=='10.0.1.0/24'])" \
+    --output text)
+
+  if [ "${rule_count}" = '0' ]; then
+    aws ec2 authorize-security-group-ingress \
+      --region "${AWS_REGION}" \
+      --group-id "${NAT_SG_ID}" \
+      --ip-permissions \
+        "IpProtocol=tcp,FromPort=${port},ToPort=${port},IpRanges=[{CidrIp=10.0.1.0/24,Description=\"${description}\"}]"
+  fi
+}
+
+ensure_ingress_rule 80 HTTP-from-private-subnet
+ensure_ingress_rule 443 HTTPS-from-private-subnet
 
 aws ec2 describe-security-groups \
   --region "${AWS_REGION}" \
@@ -498,7 +529,7 @@ aws ec2 describe-security-groups \
   --query 'SecurityGroups[0].{GroupId:GroupId,Ingress:IpPermissions,Egress:IpPermissionsEgress}'
 ```
 
-HTTPとHTTPSのインバウンド、および`0.0.0.0/0`へのアウトバウンドが表示されることを確認します。`create-security-group`で作成したSecurity Groupには、既定で全トラフィックを許可するアウトバウンドルールが設定されます。
+既存のSecurity Groupがあれば再利用し、不足しているHTTP/HTTPSルールだけを追加します。HTTPとHTTPSのインバウンド、および`0.0.0.0/0`へのアウトバウンドが表示されることを確認します。`create-security-group`で作成したSecurity Groupには、既定で全トラフィックを許可するアウトバウンドルールが設定されます。
 
 ### A.3 User Dataを用意する
 
@@ -575,6 +606,7 @@ aws ec2 wait instance-status-ok \
 
 ```bash
 PING_STATUS=None
+NAT_CONFIGURATION_VERIFIED=false
 
 for attempt in {1..30}; do
   PING_STATUS=$(aws ssm describe-instance-information \
@@ -593,14 +625,15 @@ done
 
 if [ "${PING_STATUS}" != 'Online' ]; then
   echo 'NAT instance did not become online in Systems Manager.' >&2
-  exit 1
+  echo 'A.6以降は実行せず、設定とログを確認してください。' >&2
 fi
 ```
 
 Run Commandで、完了マーカー、IP forwarding、MASQUERADE、インターネット接続を検証します。
 
 ```bash
-cat > /tmp/nat-verify-parameters.json <<'VERIFY_PARAMETERS'
+verify_nat_configuration() {
+  cat > /tmp/nat-verify-parameters.json <<'VERIFY_PARAMETERS'
 {
   "commands": [
     "test -f /var/lib/nat-instance-configured",
@@ -611,35 +644,43 @@ cat > /tmp/nat-verify-parameters.json <<'VERIFY_PARAMETERS'
 }
 VERIFY_PARAMETERS
 
-COMMAND_ID=$(aws ssm send-command \
-  --region "${AWS_REGION}" \
-  --instance-ids "${NAT_INSTANCE_ID}" \
-  --document-name AWS-RunShellScript \
-  --parameters file:///tmp/nat-verify-parameters.json \
-  --query 'Command.CommandId' \
-  --output text)
+  COMMAND_ID=$(aws ssm send-command \
+    --region "${AWS_REGION}" \
+    --instance-ids "${NAT_INSTANCE_ID}" \
+    --document-name AWS-RunShellScript \
+    --parameters file:///tmp/nat-verify-parameters.json \
+    --query 'Command.CommandId' \
+    --output text)
 
-aws ssm wait command-executed \
-  --region "${AWS_REGION}" \
-  --command-id "${COMMAND_ID}" \
-  --instance-id "${NAT_INSTANCE_ID}"
+  aws ssm wait command-executed \
+    --region "${AWS_REGION}" \
+    --command-id "${COMMAND_ID}" \
+    --instance-id "${NAT_INSTANCE_ID}"
 
-aws ssm get-command-invocation \
-  --region "${AWS_REGION}" \
-  --command-id "${COMMAND_ID}" \
-  --instance-id "${NAT_INSTANCE_ID}" \
-  --query '{Status:Status,Output:StandardOutputContent,Error:StandardErrorContent}'
+  aws ssm get-command-invocation \
+    --region "${AWS_REGION}" \
+    --command-id "${COMMAND_ID}" \
+    --instance-id "${NAT_INSTANCE_ID}" \
+    --query '{Status:Status,Output:StandardOutputContent,Error:StandardErrorContent}'
 
-VERIFY_STATUS=$(aws ssm get-command-invocation \
-  --region "${AWS_REGION}" \
-  --command-id "${COMMAND_ID}" \
-  --instance-id "${NAT_INSTANCE_ID}" \
-  --query Status \
-  --output text)
+  VERIFY_STATUS=$(aws ssm get-command-invocation \
+    --region "${AWS_REGION}" \
+    --command-id "${COMMAND_ID}" \
+    --instance-id "${NAT_INSTANCE_ID}" \
+    --query Status \
+    --output text)
 
-if [ "${VERIFY_STATUS}" != 'Success' ]; then
-  echo 'NAT configuration verification failed. Do not change the route table.' >&2
-  exit 1
+  if [ "${VERIFY_STATUS}" != 'Success' ]; then
+    echo 'NAT configuration verification failed. Do not change the route table.' >&2
+    return 1
+  fi
+}
+
+if [ "${PING_STATUS}" = 'Online' ] && verify_nat_configuration; then
+  NAT_CONFIGURATION_VERIFIED=true
+  echo 'NAT configuration verification succeeded.'
+else
+  echo 'A.6以降は実行せず、設定とログを確認してください。' >&2
 fi
 ```
 
@@ -648,19 +689,34 @@ fi
 ### A.6 Source/Destination Checkを無効化する
 
 ```bash
-aws ec2 modify-instance-attribute \
-  --region "${AWS_REGION}" \
-  --instance-id "${NAT_INSTANCE_ID}" \
-  --no-source-dest-check
+ROUTE_SWITCH_ALLOWED=false
 
-aws ec2 describe-instance-attribute \
-  --region "${AWS_REGION}" \
-  --instance-id "${NAT_INSTANCE_ID}" \
-  --attribute sourceDestCheck \
-  --query 'SourceDestCheck.Value'
+if [ "${NAT_CONFIGURATION_VERIFIED:-false}" != 'true' ]; then
+  echo 'NAT configuration has not been verified. Do not change the route table.' >&2
+else
+  aws ec2 modify-instance-attribute \
+    --region "${AWS_REGION}" \
+    --instance-id "${NAT_INSTANCE_ID}" \
+    --no-source-dest-check
+
+  SOURCE_DEST_CHECK=$(aws ec2 describe-instance-attribute \
+    --region "${AWS_REGION}" \
+    --instance-id "${NAT_INSTANCE_ID}" \
+    --attribute sourceDestCheck \
+    --query 'SourceDestCheck.Value' \
+    --output text)
+
+  if [ "${SOURCE_DEST_CHECK}" = 'False' ]; then
+    ROUTE_SWITCH_ALLOWED=true
+  else
+    echo 'Source/Destination Check is still enabled. Do not change the route table.' >&2
+  fi
+
+  echo "Source/Destination Check: ${SOURCE_DEST_CHECK}"
+fi
 ```
 
-`false`が表示されることを確認します。
+`False`が表示されることを確認します。検証が成功した場合だけ、`ROUTE_SWITCH_ALLOWED`が`true`になります。
 
 ### A.7 Private Route Tableを切り替える
 
@@ -687,17 +743,21 @@ printf 'Private route table: %s\nNAT Gateway for rollback: %s\n' \
 両方のIDが表示され、`None`でないことを確認してからルートを変更します。
 
 ```bash
-aws ec2 replace-route \
-  --region "${AWS_REGION}" \
-  --route-table-id "${PRIVATE_ROUTE_TABLE_ID}" \
-  --destination-cidr-block 0.0.0.0/0 \
-  --instance-id "${NAT_INSTANCE_ID}"
+if [ "${ROUTE_SWITCH_ALLOWED:-false}" != 'true' ]; then
+  echo 'NAT instance is not ready. The route table was not changed.' >&2
+else
+  aws ec2 replace-route \
+    --region "${AWS_REGION}" \
+    --route-table-id "${PRIVATE_ROUTE_TABLE_ID}" \
+    --destination-cidr-block 0.0.0.0/0 \
+    --instance-id "${NAT_INSTANCE_ID}"
 
-aws ec2 describe-route-tables \
-  --region "${AWS_REGION}" \
-  --route-table-ids "${PRIVATE_ROUTE_TABLE_ID}" \
-  --query "RouteTables[0].Routes[?DestinationCidrBlock=='0.0.0.0/0'].[DestinationCidrBlock,InstanceId,State]" \
-  --output table
+  aws ec2 describe-route-tables \
+    --region "${AWS_REGION}" \
+    --route-table-ids "${PRIVATE_ROUTE_TABLE_ID}" \
+    --query "RouteTables[0].Routes[?DestinationCidrBlock=='0.0.0.0/0'].[DestinationCidrBlock,InstanceId,State]" \
+    --output table
+fi
 ```
 
 `0.0.0.0/0`のターゲットにNATインスタンスIDが表示され、状態が`active`であることを確認します。その後、本編の手順8と同様にPrivate EC2へSession Managerで再接続し、送信元IPの変化を確認します。
@@ -740,7 +800,7 @@ aws ec2 delete-security-group \
 rm -f /tmp/nat-instance-user-data.sh /tmp/nat-verify-parameters.json
 ```
 
-Security Groupの削除で`DependencyViolation`が表示された場合は、終了したインスタンスのネットワークインターフェイスが削除されるまで少し待ってから、`delete-security-group`を再実行します。最後に、本編の後片付けと同様に`npx cdk destroy --force`を実行します。
+Security Groupの削除で`DependencyViolation`が表示された場合は、終了したインスタンスのネットワークインターフェイスが削除されるまで少し待ってから、`delete-security-group`を再実行します。最後に、本編の後片付けと同様に`npx cdk destroy`を実行し、削除対象を確認してから続行します。
 
 ## 参考資料
 
