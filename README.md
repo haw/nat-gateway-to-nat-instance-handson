@@ -444,7 +444,7 @@ npx cdk destroy
 
 ### A.1 CDKスタックの情報を取得する
 
-CloudShellで次を実行します。
+**CloudShell**で次を実行します。
 
 ```bash
 export AWS_REGION=us-east-1
