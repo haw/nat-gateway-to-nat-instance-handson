@@ -415,6 +415,317 @@ npx cdk destroy --force
 - ハンズオンで作成されたElastic IP
 - `nat-handson-nat-instance-sg`
 
+## 付録: CloudShellからNATインスタンスを自動構築する
+
+本編の手順4〜8は、各設定の意味を確認するためにAWSコンソールとSession Managerから手動で操作します。実際の作業では、コマンドの入力漏れやインターフェイス名の指定間違いを避けるため、AWS CLIとUser Dataで再現可能に構築できます。
+
+この付録は、**本編の手順3まで完了した状態から、本編の手順4〜8の代わりに実施**します。CloudShellのシェルを閉じると変数が失われるため、一連の作業は同じシェルで行ってください。
+
+> [!WARNING]
+> User Dataの完了を確認する前にPrivate Route Tableを変更しないでください。NAT設定に失敗した状態でルートを切り替えると、Private EC2のインターネット通信とSession Manager接続が利用できなくなります。
+
+### A.1 CDKスタックの情報を取得する
+
+CloudShellで次を実行します。
+
+```bash
+export AWS_REGION=us-east-1
+STACK_NAME=NatGatewayToNatInstanceHandsonStack
+
+stack_output() {
+  aws cloudformation describe-stacks \
+    --stack-name "${STACK_NAME}" \
+    --region "${AWS_REGION}" \
+    --query "Stacks[0].Outputs[?OutputKey=='$1'].OutputValue | [0]" \
+    --output text
+}
+
+VPC_ID=$(stack_output VpcId)
+PUBLIC_SUBNET_ID=$(stack_output PublicSubnetId)
+PRIVATE_SUBNET_ID=$(stack_output PrivateSubnetId)
+PRIVATE_INSTANCE_ID=$(stack_output PrivateInstanceId)
+INSTANCE_PROFILE_NAME=$(stack_output SessionManagerInstanceProfileName)
+
+printf 'VPC: %s\nPublic subnet: %s\nPrivate subnet: %s\nPrivate EC2: %s\nInstance profile: %s\n' \
+  "${VPC_ID}" \
+  "${PUBLIC_SUBNET_ID}" \
+  "${PRIVATE_SUBNET_ID}" \
+  "${PRIVATE_INSTANCE_ID}" \
+  "${INSTANCE_PROFILE_NAME}"
+```
+
+すべての値が表示され、`None`が含まれていないことを確認します。
+
+### A.2 Security Groupを作成する
+
+```bash
+NAT_SG_ID=$(aws ec2 create-security-group \
+  --region "${AWS_REGION}" \
+  --group-name nat-handson-nat-instance-sg \
+  --description 'Security group for the NAT instance hands-on' \
+  --vpc-id "${VPC_ID}" \
+  --tag-specifications \
+    'ResourceType=security-group,Tags=[{Key=Name,Value=nat-handson-nat-instance-sg}]' \
+  --query GroupId \
+  --output text)
+
+aws ec2 authorize-security-group-ingress \
+  --region "${AWS_REGION}" \
+  --group-id "${NAT_SG_ID}" \
+  --ip-permissions \
+    'IpProtocol=tcp,FromPort=80,ToPort=80,IpRanges=[{CidrIp=10.0.1.0/24,Description="HTTP from private subnet"}]' \
+    'IpProtocol=tcp,FromPort=443,ToPort=443,IpRanges=[{CidrIp=10.0.1.0/24,Description="HTTPS from private subnet"}]'
+
+aws ec2 describe-security-groups \
+  --region "${AWS_REGION}" \
+  --group-ids "${NAT_SG_ID}" \
+  --query 'SecurityGroups[0].{GroupId:GroupId,Ingress:IpPermissions,Egress:IpPermissionsEgress}'
+```
+
+HTTPとHTTPSのインバウンド、および`0.0.0.0/0`へのアウトバウンドが表示されることを確認します。`create-security-group`で作成したSecurity Groupには、既定で全トラフィックを許可するアウトバウンドルールが設定されます。
+
+### A.3 User Dataを用意する
+
+User Dataは初回起動時にrootユーザーとして実行されます。最後まで成功した場合だけ、完了を示す`/var/lib/nat-instance-configured`を作成します。
+
+```bash
+cat > /tmp/nat-instance-user-data.sh <<'USER_DATA'
+#!/bin/bash
+set -euxo pipefail
+
+yum install iptables-services -y
+systemctl enable iptables
+systemctl start iptables
+
+echo 'net.ipv4.ip_forward=1' > /etc/sysctl.d/custom-ip-forwarding.conf
+sysctl -p /etc/sysctl.d/custom-ip-forwarding.conf
+
+PRIMARY_INTERFACE=$(ip route show default | awk '/default/ {print $5; exit}')
+test -n "${PRIMARY_INTERFACE}"
+
+/sbin/iptables -t nat -A POSTROUTING -o "${PRIMARY_INTERFACE}" -j MASQUERADE
+/sbin/iptables -F FORWARD
+/sbin/iptables -P FORWARD ACCEPT
+service iptables save
+
+touch /var/lib/nat-instance-configured
+USER_DATA
+```
+
+`<<'USER_DATA'`の引用符により、`PRIMARY_INTERFACE`はCloudShellではなくNATインスタンス上で展開されます。
+
+### A.4 NATインスタンスを起動する
+
+最新のAmazon Linux 2023 AMI IDを取得し、Public Subnetへ起動します。
+
+```bash
+AMI_ID=$(aws ssm get-parameter \
+  --region "${AWS_REGION}" \
+  --name /aws/service/ami-amazon-linux-latest/al2023-ami-kernel-default-x86_64 \
+  --query Parameter.Value \
+  --output text)
+
+NAT_INSTANCE_ID=$(aws ec2 run-instances \
+  --region "${AWS_REGION}" \
+  --image-id "${AMI_ID}" \
+  --instance-type t3.nano \
+  --subnet-id "${PUBLIC_SUBNET_ID}" \
+  --security-group-ids "${NAT_SG_ID}" \
+  --iam-instance-profile "Name=${INSTANCE_PROFILE_NAME}" \
+  --associate-public-ip-address \
+  --metadata-options 'HttpTokens=required,HttpEndpoint=enabled' \
+  --block-device-mappings \
+    '[{"DeviceName":"/dev/xvda","Ebs":{"VolumeSize":8,"VolumeType":"gp3","Encrypted":true,"DeleteOnTermination":true}}]' \
+  --user-data file:///tmp/nat-instance-user-data.sh \
+  --tag-specifications \
+    'ResourceType=instance,Tags=[{Key=Name,Value=nat-handson-nat-instance}]' \
+  --query 'Instances[0].InstanceId' \
+  --output text)
+
+echo "NAT instance: ${NAT_INSTANCE_ID}"
+
+aws ec2 wait instance-running \
+  --region "${AWS_REGION}" \
+  --instance-ids "${NAT_INSTANCE_ID}"
+
+aws ec2 wait instance-status-ok \
+  --region "${AWS_REGION}" \
+  --instance-ids "${NAT_INSTANCE_ID}"
+```
+
+### A.5 User Dataの完了を検証する
+
+最初に、NATインスタンスがSystems Managerへオンライン登録されるまで待ちます。
+
+```bash
+PING_STATUS=None
+
+for attempt in {1..30}; do
+  PING_STATUS=$(aws ssm describe-instance-information \
+    --region "${AWS_REGION}" \
+    --filters "Key=InstanceIds,Values=${NAT_INSTANCE_ID}" \
+    --query 'InstanceInformationList[0].PingStatus' \
+    --output text)
+
+  if [ "${PING_STATUS}" = 'Online' ]; then
+    break
+  fi
+
+  echo "Waiting for Systems Manager (${attempt}/30): ${PING_STATUS}"
+  sleep 10
+done
+
+if [ "${PING_STATUS}" != 'Online' ]; then
+  echo 'NAT instance did not become online in Systems Manager.' >&2
+  exit 1
+fi
+```
+
+Run Commandで、完了マーカー、IP forwarding、MASQUERADE、インターネット接続を検証します。
+
+```bash
+cat > /tmp/nat-verify-parameters.json <<'VERIFY_PARAMETERS'
+{
+  "commands": [
+    "test -f /var/lib/nat-instance-configured",
+    "test \"$(sysctl -n net.ipv4.ip_forward)\" = \"1\"",
+    "/sbin/iptables -t nat -S POSTROUTING | grep -q -- '-j MASQUERADE'",
+    "curl --fail --silent --show-error https://checkip.amazonaws.com"
+  ]
+}
+VERIFY_PARAMETERS
+
+COMMAND_ID=$(aws ssm send-command \
+  --region "${AWS_REGION}" \
+  --instance-ids "${NAT_INSTANCE_ID}" \
+  --document-name AWS-RunShellScript \
+  --parameters file:///tmp/nat-verify-parameters.json \
+  --query 'Command.CommandId' \
+  --output text)
+
+aws ssm wait command-executed \
+  --region "${AWS_REGION}" \
+  --command-id "${COMMAND_ID}" \
+  --instance-id "${NAT_INSTANCE_ID}"
+
+aws ssm get-command-invocation \
+  --region "${AWS_REGION}" \
+  --command-id "${COMMAND_ID}" \
+  --instance-id "${NAT_INSTANCE_ID}" \
+  --query '{Status:Status,Output:StandardOutputContent,Error:StandardErrorContent}'
+
+VERIFY_STATUS=$(aws ssm get-command-invocation \
+  --region "${AWS_REGION}" \
+  --command-id "${COMMAND_ID}" \
+  --instance-id "${NAT_INSTANCE_ID}" \
+  --query Status \
+  --output text)
+
+if [ "${VERIFY_STATUS}" != 'Success' ]; then
+  echo 'NAT configuration verification failed. Do not change the route table.' >&2
+  exit 1
+fi
+```
+
+`Status`が`Success`である場合だけ次へ進みます。失敗した場合は、Session ManagerでNATインスタンスへ接続し、`/var/log/cloud-init-output.log`を確認してください。
+
+### A.6 Source/Destination Checkを無効化する
+
+```bash
+aws ec2 modify-instance-attribute \
+  --region "${AWS_REGION}" \
+  --instance-id "${NAT_INSTANCE_ID}" \
+  --no-source-dest-check
+
+aws ec2 describe-instance-attribute \
+  --region "${AWS_REGION}" \
+  --instance-id "${NAT_INSTANCE_ID}" \
+  --attribute sourceDestCheck \
+  --query 'SourceDestCheck.Value'
+```
+
+`false`が表示されることを確認します。
+
+### A.7 Private Route Tableを切り替える
+
+Private Subnetに関連付けられたルートテーブルと、CDKが作成したNAT Gatewayを取得します。`NAT_GATEWAY_ID`は復旧時に使用します。
+
+```bash
+PRIVATE_ROUTE_TABLE_ID=$(aws ec2 describe-route-tables \
+  --region "${AWS_REGION}" \
+  --filters "Name=association.subnet-id,Values=${PRIVATE_SUBNET_ID}" \
+  --query 'RouteTables[0].RouteTableId' \
+  --output text)
+
+NAT_GATEWAY_ID=$(aws cloudformation list-stack-resources \
+  --region "${AWS_REGION}" \
+  --stack-name "${STACK_NAME}" \
+  --query "StackResourceSummaries[?ResourceType=='AWS::EC2::NatGateway'].PhysicalResourceId | [0]" \
+  --output text)
+
+printf 'Private route table: %s\nNAT Gateway for rollback: %s\n' \
+  "${PRIVATE_ROUTE_TABLE_ID}" \
+  "${NAT_GATEWAY_ID}"
+```
+
+両方のIDが表示され、`None`でないことを確認してからルートを変更します。
+
+```bash
+aws ec2 replace-route \
+  --region "${AWS_REGION}" \
+  --route-table-id "${PRIVATE_ROUTE_TABLE_ID}" \
+  --destination-cidr-block 0.0.0.0/0 \
+  --instance-id "${NAT_INSTANCE_ID}"
+
+aws ec2 describe-route-tables \
+  --region "${AWS_REGION}" \
+  --route-table-ids "${PRIVATE_ROUTE_TABLE_ID}" \
+  --query "RouteTables[0].Routes[?DestinationCidrBlock=='0.0.0.0/0'].[DestinationCidrBlock,InstanceId,State]" \
+  --output table
+```
+
+`0.0.0.0/0`のターゲットにNATインスタンスIDが表示され、状態が`active`であることを確認します。その後、本編の手順8と同様にPrivate EC2へSession Managerで再接続し、送信元IPの変化を確認します。
+
+### A.8 NAT Gatewayへ戻す
+
+疎通確認に失敗した場合や付録を終了する場合は、NATインスタンスを終了する前にルートをNAT Gatewayへ戻します。
+
+```bash
+aws ec2 replace-route \
+  --region "${AWS_REGION}" \
+  --route-table-id "${PRIVATE_ROUTE_TABLE_ID}" \
+  --destination-cidr-block 0.0.0.0/0 \
+  --nat-gateway-id "${NAT_GATEWAY_ID}"
+
+aws ec2 describe-route-tables \
+  --region "${AWS_REGION}" \
+  --route-table-ids "${PRIVATE_ROUTE_TABLE_ID}" \
+  --query "RouteTables[0].Routes[?DestinationCidrBlock=='0.0.0.0/0'].[DestinationCidrBlock,NatGatewayId,State]" \
+  --output table
+```
+
+NAT Gateway IDと`active`が表示されることを確認します。
+
+### A.9 付録で作成したリソースを削除する
+
+```bash
+aws ec2 terminate-instances \
+  --region "${AWS_REGION}" \
+  --instance-ids "${NAT_INSTANCE_ID}"
+
+aws ec2 wait instance-terminated \
+  --region "${AWS_REGION}" \
+  --instance-ids "${NAT_INSTANCE_ID}"
+
+aws ec2 delete-security-group \
+  --region "${AWS_REGION}" \
+  --group-id "${NAT_SG_ID}"
+
+rm -f /tmp/nat-instance-user-data.sh /tmp/nat-verify-parameters.json
+```
+
+Security Groupの削除で`DependencyViolation`が表示された場合は、終了したインスタンスのネットワークインターフェイスが削除されるまで少し待ってから、`delete-security-group`を再実行します。最後に、本編の後片付けと同様に`npx cdk destroy --force`を実行します。
+
 ## 参考資料
 
 - [NATインスタンスを使用する（Amazon VPC User Guide）](https://docs.aws.amazon.com/vpc/latest/userguide/work-with-nat-instances.html)
