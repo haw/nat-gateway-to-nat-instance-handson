@@ -120,9 +120,10 @@ aws sts get-caller-identity
 
 ### 1.3 プロジェクトを配置する
 
-配布されたプロジェクトをCloudShellへアップロードするか、指定されたGitリポジトリをCloneし、プロジェクトディレクトリへ移動します。
+GitHubからプロジェクトをCloneし、プロジェクトディレクトリへ移動します。
 
 ```bash
+git clone https://github.com/haw/nat-gateway-to-nat-instance-handson.git
 cd nat-gateway-to-nat-instance-handson
 npm install
 ```
