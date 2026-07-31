@@ -144,7 +144,6 @@ npx cdk deploy --require-approval never
 | `VpcId` | NATインスタンスを作成するVPC |
 | `PublicSubnetId` | NATインスタンスを配置するサブネット |
 | `PrivateSubnetId` | Private EC2を配置したサブネット |
-| `PrivateRouteTableId` | 演習でデフォルトルートを変更するルートテーブル |
 | `PrivateInstanceId` | Session Managerで接続するPrivate EC2 |
 | `NatGatewayPublicIp` | 切替前の送信元パブリックIPv4 |
 | `SessionManagerInstanceProfileName` | NATインスタンスへ設定するIAMインスタンスプロファイル |
@@ -275,9 +274,9 @@ EC2インスタンスは、通常、自分自身が送信元または宛先で�
 
 ## 7. Private Subnetのルートを切り替える
 
-1. VPCコンソールで **ルートテーブル** を開きます。
-2. Outputの`PrivateRouteTableId`に対応する`nat-handson-private-rt`を選択します。
-3. **ルート**タブで **ルートを編集** を選択します。
+1. VPCコンソールで **お使いのVPC** を開き、Outputの`VpcId`に対応する`nat-handson-vpc`を選択します。
+2. **リソースマップ**を開き、Private Subnet（名前に`Private`を含むサブネット）に接続されているルートテーブルを選択します。Outputの`PrivateSubnetId`でも対象サブネットを確認できます。
+3. 遷移したルートテーブルの **ルート**タブで **ルートを編集** を選択します。
 4. NAT Gatewayをターゲットとする`0.0.0.0/0`のルートを削除します。
 5. 次のルートを追加します。
 

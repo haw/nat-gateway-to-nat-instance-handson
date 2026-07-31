@@ -6,7 +6,6 @@ const app = new cdk.App();
 
 new NatGatewayToNatInstanceHandsonStack(app, 'NatGatewayToNatInstanceHandsonStack', {
   env: {
-    account: process.env.CDK_DEFAULT_ACCOUNT,
     region: 'us-east-1',
   },
   description: 'Hands-on environment for replacing a NAT Gateway with a NAT instance',

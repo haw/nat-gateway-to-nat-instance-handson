@@ -46,10 +46,6 @@ test('creates a private, encrypted, SSM-managed test instance', () => {
     InstanceType: 't3.nano',
     IamInstanceProfile: Match.anyValue(),
     SecurityGroupIds: [Match.anyValue()],
-    MetadataOptions: {
-      HttpEndpoint: 'enabled',
-      HttpTokens: 'required',
-    },
     BlockDeviceMappings: [
       {
         DeviceName: '/dev/xvda',
@@ -61,6 +57,13 @@ test('creates a private, encrypted, SSM-managed test instance', () => {
         },
       },
     ],
+  });
+  template.hasResourceProperties('AWS::EC2::LaunchTemplate', {
+    LaunchTemplateData: Match.objectLike({
+      MetadataOptions: Match.objectLike({
+        HttpTokens: 'required',
+      }),
+    }),
   });
   template.hasResourceProperties('AWS::EC2::SecurityGroup', {
     SecurityGroupIngress: Match.absent(),
@@ -89,7 +92,6 @@ test('publishes the identifiers needed by students', () => {
       VpcId: expect.any(Object),
       PublicSubnetId: expect.any(Object),
       PrivateSubnetId: expect.any(Object),
-      PrivateRouteTableId: expect.any(Object),
       PrivateInstanceId: expect.any(Object),
       NatGatewayPublicIp: expect.any(Object),
       SessionManagerInstanceProfileName: expect.any(Object),

@@ -1,10 +1,4 @@
-import {
-  Aws,
-  CfnOutput,
-  Stack,
-  StackProps,
-  Tags,
-} from 'aws-cdk-lib';
+import { CfnOutput, Stack, StackProps, Tags } from 'aws-cdk-lib';
 import * as ec2 from 'aws-cdk-lib/aws-ec2';
 import * as iam from 'aws-cdk-lib/aws-iam';
 import { Construct } from 'constructs';
@@ -17,177 +11,125 @@ export class NatGatewayToNatInstanceHandsonStack extends Stack {
       throw new Error('This hands-on stack must be deployed in us-east-1.');
     }
 
-    const vpc = new ec2.CfnVPC(this, 'Vpc', {
-      cidrBlock: '10.0.0.0/16',
-      enableDnsHostnames: true,
-      enableDnsSupport: true,
-      instanceTenancy: 'default',
-      tags: [{ key: 'Name', value: 'nat-handson-vpc' }],
-    });
-
-    const internetGateway = new ec2.CfnInternetGateway(this, 'InternetGateway', {
-      tags: [{ key: 'Name', value: 'nat-handson-igw' }],
-    });
-
-    const internetGatewayAttachment = new ec2.CfnVPCGatewayAttachment(
-      this,
-      'InternetGatewayAttachment',
-      {
-        vpcId: vpc.ref,
-        internetGatewayId: internetGateway.ref,
-      },
-    );
-
-    const publicSubnet = new ec2.CfnSubnet(this, 'PublicSubnet', {
-      vpcId: vpc.ref,
-      cidrBlock: '10.0.0.0/24',
-      availabilityZone: `${Aws.REGION}a`,
-      mapPublicIpOnLaunch: true,
-      tags: [{ key: 'Name', value: 'nat-handson-public-subnet' }],
-    });
-
-    const privateSubnet = new ec2.CfnSubnet(this, 'PrivateSubnet', {
-      vpcId: vpc.ref,
-      cidrBlock: '10.0.1.0/24',
-      availabilityZone: `${Aws.REGION}a`,
-      mapPublicIpOnLaunch: false,
-      tags: [{ key: 'Name', value: 'nat-handson-private-subnet' }],
-    });
-
-    const publicRouteTable = new ec2.CfnRouteTable(this, 'PublicRouteTable', {
-      vpcId: vpc.ref,
-      tags: [{ key: 'Name', value: 'nat-handson-public-rt' }],
-    });
-
-    const publicDefaultRoute = new ec2.CfnRoute(this, 'PublicDefaultRoute', {
-      routeTableId: publicRouteTable.ref,
-      destinationCidrBlock: '0.0.0.0/0',
-      gatewayId: internetGateway.ref,
-    });
-    publicDefaultRoute.addResourceDependency(internetGatewayAttachment);
-
-    new ec2.CfnSubnetRouteTableAssociation(this, 'PublicRouteTableAssociation', {
-      subnetId: publicSubnet.ref,
-      routeTableId: publicRouteTable.ref,
-    });
-
     const natGatewayEip = new ec2.CfnEIP(this, 'NatGatewayEip', {
       domain: 'vpc',
-      tags: [{ key: 'Name', value: 'nat-handson-nat-gateway-eip' }],
-    });
-    natGatewayEip.addResourceDependency(internetGatewayAttachment);
-
-    const natGateway = new ec2.CfnNatGateway(this, 'NatGateway', {
-      subnetId: publicSubnet.ref,
-      allocationId: natGatewayEip.attrAllocationId,
-      connectivityType: 'public',
-      tags: [{ key: 'Name', value: 'nat-handson-nat-gateway' }],
     });
 
-    const privateRouteTable = new ec2.CfnRouteTable(this, 'PrivateRouteTable', {
-      vpcId: vpc.ref,
-      tags: [{ key: 'Name', value: 'nat-handson-private-rt' }],
-    });
-
-    const privateDefaultRoute = new ec2.CfnRoute(this, 'PrivateDefaultRoute', {
-      routeTableId: privateRouteTable.ref,
-      destinationCidrBlock: '0.0.0.0/0',
-      natGatewayId: natGateway.ref,
-    });
-
-    new ec2.CfnSubnetRouteTableAssociation(this, 'PrivateRouteTableAssociation', {
-      subnetId: privateSubnet.ref,
-      routeTableId: privateRouteTable.ref,
-    });
-
-    const ssmRole = new iam.CfnRole(this, 'SessionManagerRole', {
-      assumeRolePolicyDocument: {
-        Version: '2012-10-17',
-        Statement: [
-          {
-            Effect: 'Allow',
-            Principal: { Service: 'ec2.amazonaws.com' },
-            Action: 'sts:AssumeRole',
-          },
-        ],
-      },
-      managedPolicyArns: [
-        `arn:${Aws.PARTITION}:iam::aws:policy/AmazonSSMManagedInstanceCore`,
+    const vpc = new ec2.Vpc(this, 'Vpc', {
+      ipAddresses: ec2.IpAddresses.cidr('10.0.0.0/16'),
+      maxAzs: 1,
+      natGateways: 1,
+      natGatewayProvider: ec2.NatProvider.gateway({
+        eipAllocationIds: [natGatewayEip.attrAllocationId],
+      }),
+      subnetConfiguration: [
+        {
+          name: 'Public',
+          subnetType: ec2.SubnetType.PUBLIC,
+          cidrMask: 24,
+        },
+        {
+          name: 'Private',
+          subnetType: ec2.SubnetType.PRIVATE_WITH_EGRESS,
+          cidrMask: 24,
+        },
       ],
-      tags: [{ key: 'Name', value: 'nat-handson-session-manager-role' }],
     });
 
-    const ssmInstanceProfile = new iam.CfnInstanceProfile(
+    const sessionManagerRole = new iam.Role(this, 'SessionManagerRole', {
+      assumedBy: new iam.ServicePrincipal('ec2.amazonaws.com'),
+      managedPolicies: [
+        iam.ManagedPolicy.fromAwsManagedPolicyName(
+          'AmazonSSMManagedInstanceCore',
+        ),
+      ],
+    });
+
+    const sessionManagerInstanceProfile = new iam.CfnInstanceProfile(
       this,
       'SessionManagerInstanceProfile',
       {
-        roles: [ssmRole.ref],
+        roles: [sessionManagerRole.roleName],
       },
     );
 
-    const privateInstanceSecurityGroup = new ec2.CfnSecurityGroup(
+    const privateInstanceSecurityGroup = new ec2.SecurityGroup(
       this,
       'PrivateInstanceSecurityGroup',
       {
-        groupDescription: 'No ingress; allow outbound traffic for the private test instance',
-        vpcId: vpc.ref,
-        securityGroupEgress: [
-          {
-            ipProtocol: '-1',
-            cidrIp: '0.0.0.0/0',
-            description: 'Allow outbound IPv4 traffic',
-          },
-        ],
-        tags: [{ key: 'Name', value: 'nat-handson-private-ec2-sg' }],
+        vpc,
+        description: 'No ingress; allow outbound traffic for the private test instance',
+        allowAllOutbound: true,
       },
     );
 
-    const privateInstance = new ec2.CfnInstance(this, 'PrivateInstance', {
-      imageId:
-        '{{resolve:ssm:/aws/service/ami-amazon-linux-latest/al2023-ami-kernel-default-x86_64}}',
-      instanceType: 't3.nano',
-      subnetId: privateSubnet.ref,
-      securityGroupIds: [privateInstanceSecurityGroup.attrGroupId],
-      iamInstanceProfile: ssmInstanceProfile.ref,
-      metadataOptions: {
-        httpEndpoint: 'enabled',
-        httpTokens: 'required',
+    const privateInstance = new ec2.Instance(this, 'PrivateInstance', {
+      vpc,
+      vpcSubnets: {
+        subnetType: ec2.SubnetType.PRIVATE_WITH_EGRESS,
       },
-      blockDeviceMappings: [
+      machineImage: ec2.MachineImage.latestAmazonLinux2023({
+        cpuType: ec2.AmazonLinuxCpuType.X86_64,
+      }),
+      instanceType: new ec2.InstanceType('t3.nano'),
+      role: sessionManagerRole,
+      securityGroup: privateInstanceSecurityGroup,
+      requireImdsv2: true,
+      blockDevices: [
         {
           deviceName: '/dev/xvda',
-          ebs: {
-            deleteOnTermination: true,
+          volume: ec2.BlockDeviceVolume.ebs(8, {
             encrypted: true,
-            volumeSize: 8,
-            volumeType: 'gp3',
-          },
+            deleteOnTermination: true,
+            volumeType: ec2.EbsDeviceVolumeType.GP3,
+          }),
         },
       ],
-      tags: [{ key: 'Name', value: 'nat-handson-private-ec2' }],
     });
-    privateInstance.addResourceDependency(privateDefaultRoute);
 
+    Tags.of(vpc.node.defaultChild as ec2.CfnVPC).add(
+      'Name',
+      'nat-handson-vpc',
+    );
+    Tags.of(vpc.publicSubnets[0].node.defaultChild as ec2.CfnSubnet).add(
+      'Name',
+      'nat-handson-public-subnet',
+    );
+    Tags.of(vpc.privateSubnets[0].node.defaultChild as ec2.CfnSubnet).add(
+      'Name',
+      'nat-handson-private-subnet',
+    );
+    Tags.of(natGatewayEip).add('Name', 'nat-handson-nat-gateway-eip');
+    Tags.of(privateInstance.node.defaultChild as ec2.CfnInstance).add(
+      'Name',
+      'nat-handson-private-ec2',
+    );
+    Tags.of(
+      privateInstanceSecurityGroup.node.defaultChild as ec2.CfnSecurityGroup,
+    ).add(
+      'Name',
+      'nat-handson-private-ec2-sg',
+    );
+    Tags.of(sessionManagerRole.node.defaultChild as iam.CfnRole).add(
+      'Name',
+      'nat-handson-session-manager-role',
+    );
     Tags.of(this).add('Project', 'nat-gateway-to-nat-instance-handson');
 
     new CfnOutput(this, 'VpcId', {
-      value: vpc.ref,
+      value: vpc.vpcId,
       description: 'VPC used by the hands-on',
     });
     new CfnOutput(this, 'PublicSubnetId', {
-      value: publicSubnet.ref,
+      value: vpc.publicSubnets[0].subnetId,
       description: 'Subnet in which to launch the NAT instance',
     });
     new CfnOutput(this, 'PrivateSubnetId', {
-      value: privateSubnet.ref,
+      value: vpc.privateSubnets[0].subnetId,
       description: 'Subnet containing the private test instance',
     });
-    new CfnOutput(this, 'PrivateRouteTableId', {
-      value: privateRouteTable.ref,
-      description: 'Route table whose default route is changed during the hands-on',
-    });
     new CfnOutput(this, 'PrivateInstanceId', {
-      value: privateInstance.ref,
+      value: privateInstance.instanceId,
       description: 'Private test EC2 instance for Session Manager',
     });
     new CfnOutput(this, 'NatGatewayPublicIp', {
@@ -195,7 +137,7 @@ export class NatGatewayToNatInstanceHandsonStack extends Stack {
       description: 'Initial outbound public IPv4 address through the NAT Gateway',
     });
     new CfnOutput(this, 'SessionManagerInstanceProfileName', {
-      value: ssmInstanceProfile.ref,
+      value: sessionManagerInstanceProfile.ref,
       description: 'Instance profile to select when launching the NAT instance',
     });
   }
