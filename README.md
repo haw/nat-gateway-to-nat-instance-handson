@@ -213,6 +213,9 @@ EC2コンソールで **インスタンスを起動** を選択し、次のよ�
 
 **高度な詳細**を開き、**IAMインスタンスプロファイル**でOutputの`SessionManagerInstanceProfileName`に対応するプロファイルを選択します。
 
+> [!NOTE]
+> このインスタンスプロファイルには、AWS管理ポリシー`AmazonSSMManagedInstanceCore`を付与したIAMロールが含まれています。これにより、NATインスタンスをSystems Managerのマネージドノードとして登録し、SSHポートやキーペアを使わずにSession Managerから接続できます。
+
 設定を確認してインスタンスを起動します。インスタンスが`実行中`になり、ステータスチェックが成功するまで待ちます。
 
 > [!NOTE]
