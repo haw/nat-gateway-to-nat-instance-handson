@@ -93,7 +93,7 @@ NATデータ処理      : $0.045 × 0.1 GB                  = $0.0045
 
 AWSマネジメントコンソールでリージョンを**米国東部（バージニア北部）`us-east-1`**へ変更し、CloudShellを開きます。
 
-### 1.1 Node.js 24をインストールする
+### 1.1 Node.js 22をインストールする
 
 CloudShellで次のコマンドを実行します。
 
@@ -102,11 +102,15 @@ CloudShellで次のコマンドを実行します。
 curl -o- https://raw.githubusercontent.com/nvm-sh/nvm/v0.40.6/install.sh | bash
 source ~/.bashrc
 
-# Node.js 24のインストール
-nvm install 24
-nvm use 24
-node -v  # v24.x.x と表示されることを確認
+# Node.js 22のインストール
+nvm install 22
+nvm use 22
+node -v  # v22.15.0 以上と表示されることを確認
+npm -v   # 10.5.0 以上と表示されることを確認
 ```
+
+> [!IMPORTANT]
+> このプロジェクトが利用する`aws-cdk-lib`は、推移的依存として`@aws/cloudformation-validate@1.5.0-beta`を含みます。このバージョンはNode.jsを`^22.15.0`、npmを`>=10.5.0`に制限しており、`.npmrc`の`engine-strict=true`によってNode.js 24では`EBADENGINE`になります。そのため、依存パッケージ側の対応範囲が変更されるまではNode.js 22を使用します。
 
 ### 1.2 リージョンとアカウントを確認する
 
@@ -125,7 +129,7 @@ GitHubからプロジェクトをCloneし、プロジェクトディレクトリ
 ```bash
 git clone https://github.com/haw/nat-gateway-to-nat-instance-handson.git
 cd nat-gateway-to-nat-instance-handson
-npm install
+npm ci
 ```
 
 ## 2. 初期環境をデプロイする
@@ -183,12 +187,15 @@ curl --fail --silent --show-error https://checkip.amazonaws.com
 2. **セキュリティグループを作成** を選択します。
 3. セキュリティグループ名に`nat-handson-nat-instance-sg`を入力します。
 4. VPCにはOutputの`VpcId`に対応するVPCを選択します。
-5. インバウンドルールを次の2件だけ設定します。
+5. 本ハンズオンでは、インバウンドルールを次の2件だけ設定します。
 
 | タイプ | プロトコル | ポート | ソース |
 |---|---|---:|---|
 | HTTP | TCP | 80 | `10.0.1.0/24` |
 | HTTPS | TCP | 443 | `10.0.1.0/24` |
+
+> [!NOTE]
+> ソースの`10.0.1.0/24`は、NATインスタンスを経由して外向き通信を許可するPrivate SubnetのCIDRです。HTTP/HTTPSは今回の確認で中継する通信の例であり、実際の構成では必要なプロトコルとポートだけを許可します。
 
 6. アウトバウンドルールで、すべてのIPv4トラフィックが`0.0.0.0/0`へ許可されていることを確認します。
 7. **セキュリティグループを作成** を選択します。
@@ -212,7 +219,7 @@ EC2コンソールで **インスタンスを起動** を選択し、次のよ�
 | セキュリティグループ | 4.1で作成した`nat-handson-nat-instance-sg` |
 | ルートボリューム | gp3、8 GiB、暗号化有効 |
 
-**高度な詳細**を開き、**IAMインスタンスプロファイル**でOutputの`SessionManagerInstanceProfileName`に対応するプロファイルを選択します。
+**高度な詳細**を開き、**IAMインスタンスプロファイル**の検索欄に`NatGatewayToNatInstanceHandsonStack`を入力します。表示された候補から、Outputの`SessionManagerInstanceProfileName`と一致するプロファイルを選択します。
 
 > [!NOTE]
 > このインスタンスプロファイルには、AWS管理ポリシー`AmazonSSMManagedInstanceCore`を付与したIAMロールが含まれています。これにより、NATインスタンスをSystems Managerのマネージドノードとして登録し、SSHポートやキーペアを使わずにSession Managerから接続できます。
@@ -227,6 +234,15 @@ EC2コンソールで **インスタンスを起動** を選択し、次のよ�
 作成した`nat-handson-nat-instance`を選択し、Session Managerで接続します。
 
 ### 5.1 iptablesを有効化する
+
+最初に、Session Managerの接続ユーザーから`ec2-user`へ切り替えます。
+
+```bash
+sudo su - ec2-user
+whoami
+```
+
+`ec2-user`と表示されることを確認します。以降の手順は、この`ec2-user`のシェルで実行します。
 
 ```bash
 sudo yum install iptables-services -y
@@ -401,7 +417,7 @@ EC2またはVPCコンソールで`nat-handson-nat-instance-sg`を削除します
 CloudShellのプロジェクトディレクトリで実行します。
 
 ```bash
-nvm use 24
+nvm use 22
 export CDK_DEFAULT_ACCOUNT=$(aws sts get-caller-identity --query Account --output text)
 npx cdk destroy --force
 ```
