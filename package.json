@@ -3,7 +3,8 @@
   "version": "1.0.0",
   "private": true,
   "engines": {
-    "node": ">=24 <25"
+    "node": ">=22.15 <23",
+    "npm": ">=10.5"
   },
   "scripts": {
     "build": "tsc --noEmit",
@@ -16,7 +17,7 @@
   },
   "devDependencies": {
     "@types/jest": "^30.0.0",
-    "@types/node": "^24.0.0",
+    "@types/node": "^22.0.0",
     "aws-cdk": "^2.1029.2",
     "jest": "^30.0.5",
     "ts-jest": "^29.4.1",

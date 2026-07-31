@@ -93,7 +93,7 @@ NATデータ処理      : $0.045 × 0.1 GB                  = $0.0045
 
 AWSマネジメントコンソールでリージョンを**米国東部（バージニア北部）`us-east-1`**へ変更し、CloudShellを開きます。
 
-### 1.1 Node.js 24をインストールする
+### 1.1 Node.js 22をインストールする
 
 CloudShellで次のコマンドを実行します。
 
@@ -102,11 +102,15 @@ CloudShellで次のコマンドを実行します。
 curl -o- https://raw.githubusercontent.com/nvm-sh/nvm/v0.40.6/install.sh | bash
 source ~/.bashrc
 
-# Node.js 24のインストール
-nvm install 24
-nvm use 24
-node -v  # v24.x.x と表示されることを確認
+# Node.js 22のインストール
+nvm install 22
+nvm use 22
+node -v  # v22.15.0 以上と表示されることを確認
+npm -v   # 10.5.0 以上と表示されることを確認
 ```
+
+> [!IMPORTANT]
+> このプロジェクトが利用する`aws-cdk-lib`は、推移的依存として`@aws/cloudformation-validate@1.5.0-beta`を含みます。このバージョンはNode.jsを`^22.15.0`、npmを`>=10.5.0`に制限しており、`.npmrc`の`engine-strict=true`によってNode.js 24では`EBADENGINE`になります。そのため、依存パッケージ側の対応範囲が変更されるまではNode.js 22を使用します。
 
 ### 1.2 リージョンとアカウントを確認する
 
@@ -125,7 +129,7 @@ GitHubからプロジェクトをCloneし、プロジェクトディレクトリ
 ```bash
 git clone https://github.com/haw/nat-gateway-to-nat-instance-handson.git
 cd nat-gateway-to-nat-instance-handson
-npm install
+npm ci
 ```
 
 ## 2. 初期環境をデプロイする
@@ -401,7 +405,7 @@ EC2またはVPCコンソールで`nat-handson-nat-instance-sg`を削除します
 CloudShellのプロジェクトディレクトリで実行します。
 
 ```bash
-nvm use 24
+nvm use 22
 export CDK_DEFAULT_ACCOUNT=$(aws sts get-caller-identity --query Account --output text)
 npx cdk destroy --force
 ```
