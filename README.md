@@ -187,12 +187,15 @@ curl --fail --silent --show-error https://checkip.amazonaws.com
 2. **セキュリティグループを作成** を選択します。
 3. セキュリティグループ名に`nat-handson-nat-instance-sg`を入力します。
 4. VPCにはOutputの`VpcId`に対応するVPCを選択します。
-5. インバウンドルールを次の2件だけ設定します。
+5. 本ハンズオンでは、インバウンドルールを次の2件だけ設定します。
 
 | タイプ | プロトコル | ポート | ソース |
 |---|---|---:|---|
 | HTTP | TCP | 80 | `10.0.1.0/24` |
 | HTTPS | TCP | 443 | `10.0.1.0/24` |
+
+> [!NOTE]
+> ソースの`10.0.1.0/24`は、NATインスタンスを経由して外向き通信を許可するPrivate SubnetのCIDRです。HTTP/HTTPSは今回の確認で中継する通信の例であり、実際の構成では必要なプロトコルとポートだけを許可します。
 
 6. アウトバウンドルールで、すべてのIPv4トラフィックが`0.0.0.0/0`へ許可されていることを確認します。
 7. **セキュリティグループを作成** を選択します。
@@ -216,7 +219,7 @@ EC2コンソールで **インスタンスを起動** を選択し、次のよ�
 | セキュリティグループ | 4.1で作成した`nat-handson-nat-instance-sg` |
 | ルートボリューム | gp3、8 GiB、暗号化有効 |
 
-**高度な詳細**を開き、**IAMインスタンスプロファイル**でOutputの`SessionManagerInstanceProfileName`に対応するプロファイルを選択します。
+**高度な詳細**を開き、**IAMインスタンスプロファイル**の検索欄に`NatGatewayToNatInstanceHandsonStack`を入力します。表示された候補から、Outputの`SessionManagerInstanceProfileName`と一致するプロファイルを選択します。
 
 > [!NOTE]
 > このインスタンスプロファイルには、AWS管理ポリシー`AmazonSSMManagedInstanceCore`を付与したIAMロールが含まれています。これにより、NATインスタンスをSystems Managerのマネージドノードとして登録し、SSHポートやキーペアを使わずにSession Managerから接続できます。
